@@ -105,3 +105,24 @@ npm start
 - Attach supported Stripe Terminal EMV/NFC reader over USB/Bluetooth/LAN as configured by Stripe.
 - Use `/readers` endpoint to fetch active reader IDs.
 - Manual keyed fallback depends on Stripe account and reader capabilities.
+
+## شرح سريع بالعربية (الواجهة تبقى بالإنجليزية)
+
+هذا المشروع عبارة عن نظام نقاط بيع (POS) محلي يعمل على اللابتوب، بينما **نصوص التطبيق نفسها داخل الواجهة تبقى بالإنجليزية** حتى تكون مناسبة للتشغيل العملي للموظفين.
+
+- الكاشير يختار المنتجات من الكتالوج.
+- النظام يجمعها في السلة ويحسب الإجمالي.
+- عند الدفع، السيرفر ينشئ `PaymentIntent` بنوع `card_present` فقط.
+- العميل يدفع عبر Stripe Terminal (NFC/EMV أو إدخال يدوي حسب الدعم المتاح).
+- بعد الموافقة، يتم حفظ العملية وإظهار شاشة الإيصال مع خيار الطباعة.
+
+### كيف تشغّله بسرعة
+
+```bash
+cp .env.example .env
+# أضف STRIPE_SECRET في ملف البيئة
+npm install
+npm start
+```
+
+إذا كان لديك قيود شبكة داخل بيئة العمل تمنع تنزيل الحزم من npm، ستحتاج فتح الوصول إلى الحزم المطلوبة أو تشغيل المشروع في بيئة لها صلاحية تنزيل dependencies.

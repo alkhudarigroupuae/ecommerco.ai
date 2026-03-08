@@ -1,63 +1,95 @@
+const fs = require('fs');
 const path = require('path');
-const Database = require('better-sqlite3');
 
-const dbPath = path.join(__dirname, 'pos.db');
-const db = new Database(dbPath);
+const dbPath = path.join(__dirname, 'pos.db.json');
 
-db.pragma('journal_mode = WAL');
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS inventory (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  price INTEGER NOT NULL,
-  stock INTEGER NOT NULL DEFAULT 0,
-  category TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS transactions (
-  id TEXT PRIMARY KEY,
-  payment_intent_id TEXT NOT NULL,
-  amount INTEGER NOT NULL,
-  currency TEXT NOT NULL,
-  status TEXT NOT NULL,
-  payment_channel TEXT NOT NULL,
-  receipt_number TEXT,
-  metadata TEXT,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS refunds (
-  id TEXT PRIMARY KEY,
-  refund_id TEXT NOT NULL,
-  payment_intent_id TEXT NOT NULL,
-  amount INTEGER NOT NULL,
-  status TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-`);
-
-const count = db.prepare('SELECT COUNT(*) as total FROM inventory').get().total;
-if (!count) {
-  const now = new Date().toISOString();
-  const seedStmt = db.prepare(
-    `INSERT INTO inventory (id, name, price, stock, category, created_at, updated_at)
-     VALUES (@id, @name, @price, @stock, @category, @created_at, @updated_at)`
-  );
-
-  const seedProducts = [
-    { id: 'sku-espresso', name: 'Espresso', price: 1500, stock: 100, category: 'Drinks' },
-    { id: 'sku-sandwich', name: 'Chicken Sandwich', price: 3200, stock: 50, category: 'Food' },
-    { id: 'sku-cake', name: 'Cheesecake Slice', price: 2200, stock: 35, category: 'Dessert' },
-    { id: 'sku-water', name: 'Mineral Water', price: 500, stock: 250, category: 'Drinks' }
-  ];
-
-  const tx = db.transaction((items) => {
-    items.forEach((item) => seedStmt.run({ ...item, created_at: now, updated_at: now }));
-  });
-  tx(seedProducts);
+function nowIso() {
+  return new Date().toISOString();
 }
 
-module.exports = db;
+function loadState() {
+  if (!fs.existsSync(dbPath)) {
+    return { inventory: [], transactions: [], refunds: [] };
+  }
+
+  try {
+    return JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+  } catch {
+    return { inventory: [], transactions: [], refunds: [] };
+  }
+}
+
+let state = loadState();
+
+function persist() {
+  fs.writeFileSync(dbPath, JSON.stringify(state, null, 2));
+}
+
+function seedInventoryIfNeeded() {
+  if (state.inventory.length > 0) return;
+
+  const now = nowIso();
+  state.inventory = [
+    { id: 'sku-espresso', name: 'Espresso', price: 1500, stock: 100, category: 'Drinks', created_at: now, updated_at: now },
+    { id: 'sku-sandwich', name: 'Chicken Sandwich', price: 3200, stock: 50, category: 'Food', created_at: now, updated_at: now },
+    { id: 'sku-cake', name: 'Cheesecake Slice', price: 2200, stock: 35, category: 'Dessert', created_at: now, updated_at: now },
+    { id: 'sku-water', name: 'Mineral Water', price: 500, stock: 250, category: 'Drinks', created_at: now, updated_at: now }
+  ];
+  persist();
+}
+
+seedInventoryIfNeeded();
+
+function getInventory() {
+  return [...state.inventory].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function adjustInventory(id, stock) {
+  const item = state.inventory.find((row) => row.id === id);
+  if (!item) return false;
+  item.stock = stock;
+  item.updated_at = nowIso();
+  persist();
+  return true;
+}
+
+function insertTransaction(record) {
+  state.transactions.push(record);
+  persist();
+}
+
+function updateTransactionStatus(paymentIntentId, status) {
+  let changed = 0;
+  state.transactions = state.transactions.map((tx) => {
+    if (tx.payment_intent_id === paymentIntentId) {
+      changed += 1;
+      return { ...tx, status };
+    }
+    return tx;
+  });
+  if (changed) persist();
+  return changed;
+}
+
+function insertRefund(record) {
+  state.refunds.push(record);
+  persist();
+}
+
+function getTransactions() {
+  return [...state.transactions].sort((a, b) => b.created_at.localeCompare(a.created_at));
+}
+
+function getInventoryCount() {
+  return state.inventory.length;
+}
+
+module.exports = {
+  getInventory,
+  adjustInventory,
+  insertTransaction,
+  updateTransactionStatus,
+  insertRefund,
+  getTransactions,
+  getInventoryCount
+};

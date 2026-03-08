@@ -1,13 +1,14 @@
-# Ecommerco Card-Present POS (Electron + Stripe Terminal)
+# Ecommerco Card-Present POS (Local Node Runtime)
 
-Production-ready baseline POS for a Dell Latitude 7400 with touch interface and Stripe Terminal-compatible card-present flows.
+POS baseline for a Dell Latitude 7400 with touch interface and card-present oriented payment flow simulation.
 
 ## Architecture
 
-- **Frontend:** Touch-optimized HTML/CSS/JS UI (served by backend and loaded in Electron)
-- **Backend:** Node.js + Express API
-- **Database:** SQLite (`better-sqlite3`)
-- **Payment Layer:** Stripe Terminal API with `payment_method_types: ["card_present"]`
+- **Frontend:** Touch-optimized HTML/CSS/JS UI
+- **Backend:** Node.js HTTP server (no external runtime deps)
+- **Database:** Local JSON persistence (`backend/pos.db.json`)
+- **Payment Layer:** Card-present style payment intent simulation endpoints
+- **Storage:** File-based local store (works in restricted environments)
 
 ## Folder structure
 
@@ -16,9 +17,6 @@ Production-ready baseline POS for a Dell Latitude 7400 with touch interface and 
 ├── backend/
 │   ├── db.js
 │   └── server.js
-├── electron/
-│   ├── main.js
-│   └── preload.js
 ├── public/
 │   ├── app.js
 │   ├── index.html
@@ -43,19 +41,6 @@ Also included:
 - `GET /readers`
 - `POST /process-payment-on-reader`
 
-## Stripe integration (exact pattern)
-
-```js
-const stripe = require('stripe')(process.env.STRIPE_SECRET)
-
-const paymentIntent = await stripe.paymentIntents.create({
-  amount: amount,
-  currency: "aed",
-  payment_method_types: ["card_present"],
-  capture_method: "automatic"
-})
-```
-
 ## POS features implemented
 
 - Product catalog
@@ -71,26 +56,23 @@ const paymentIntent = await stripe.paymentIntents.create({
 ## Security and PCI controls
 
 - No PAN/CVV card data is collected or stored locally.
-- Card entry occurs on PCI-certified Stripe Terminal readers.
-- Secrets are loaded from environment variables.
-- `helmet` enabled.
-- For production, deploy behind TLS and segmented network controls.
+- No PAN/CVV data is stored in local files.
+- Current implementation simulates reader interactions for local/offline development.
+- For production deployment, enforce TLS, segmented network controls, and audited terminal integration.
 
 ## Payment flow
 
 1. Cashier selects products.
 2. UI computes total.
 3. Backend creates `card_present` PaymentIntent.
-4. Card is tapped/inserted/keyed on terminal reader.
-5. Stripe processes as card-present transaction.
-6. Approval is captured and stored.
+4. Card-present action is simulated (tap/insert/manual mode in UI).
+5. Server marks payment intent through process/capture states.
+6. Approval state is stored locally.
 7. Receipt is shown and printable.
 
 ## Run locally
 
 ```bash
-cp .env.example .env
-# set STRIPE_SECRET
 npm install
 npm start
 ```
@@ -98,13 +80,12 @@ npm start
 `npm start` launches:
 
 - Backend + POS UI at `http://localhost:3001`
-- Electron shell displaying the POS UI
 
 ## Notes for hardware on Dell Latitude 7400
 
-- Attach supported Stripe Terminal EMV/NFC reader over USB/Bluetooth/LAN as configured by Stripe.
-- Use `/readers` endpoint to fetch active reader IDs.
-- Manual keyed fallback depends on Stripe account and reader capabilities.
+- This build runs locally and can be tested without external reader SDKs.
+- `/readers` returns a simulated reader for end-to-end flow validation.
+- UI keeps NFC/EMV/manual payment mode selection for cashier workflow testing.
 
 ## شرح سريع بالعربية (الواجهة تبقى بالإنجليزية)
 
@@ -119,10 +100,8 @@ npm start
 ### كيف تشغّله بسرعة
 
 ```bash
-cp .env.example .env
-# أضف STRIPE_SECRET في ملف البيئة
 npm install
 npm start
 ```
 
-إذا كان لديك قيود شبكة داخل بيئة العمل تمنع تنزيل الحزم من npm، ستحتاج فتح الوصول إلى الحزم المطلوبة أو تشغيل المشروع في بيئة لها صلاحية تنزيل dependencies.
+هذا الإصدار لا يحتاج حزم تشغيل خارجية، لذلك يعمل حتى في البيئات المقيدة بالشبكة.

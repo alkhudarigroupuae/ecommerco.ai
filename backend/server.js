@@ -1,95 +1,120 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const morgan = require('morgan');
-const { v4: uuid } = require('uuid');
-const stripe = require('stripe')(process.env.STRIPE_SECRET);
+const http = require('http');
 const path = require('path');
+const fs = require('fs');
+const { randomUUID } = require('crypto');
 const db = require('./db');
 
-const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = Number(process.env.PORT || 3001);
+const publicDir = path.join(__dirname, '..', 'public');
 
-app.use(helmet());
-app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
-app.use(express.json());
-app.use(express.static(path.join(__dirname, '..', 'public')));
-app.use(morgan('dev'));
+const intents = new Map();
 
-const insertTransaction = db.prepare(
-  `INSERT INTO transactions (id, payment_intent_id, amount, currency, status, payment_channel, receipt_number, metadata, created_at)
-   VALUES (@id, @payment_intent_id, @amount, @currency, @status, @payment_channel, @receipt_number, @metadata, @created_at)`
-);
+function sendJson(res, statusCode, payload) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
+  });
+  res.end(JSON.stringify(payload));
+}
 
-const updateTransactionStatus = db.prepare(
-  `UPDATE transactions SET status = @status WHERE payment_intent_id = @payment_intent_id`
-);
-
-app.get('/health', (_req, res) => {
-  res.json({ ok: true, mode: 'card_present_pos' });
-});
-
-app.get('/inventory', (_req, res) => {
-  const rows = db.prepare('SELECT * FROM inventory ORDER BY name ASC').all();
-  res.json(rows);
-});
-
-app.post('/inventory/:id/adjust', (req, res) => {
-  const { id } = req.params;
-  const { stock } = req.body;
-  if (typeof stock !== 'number' || stock < 0) {
-    return res.status(400).json({ error: 'stock must be a non-negative number' });
+function serveFile(res, filePath) {
+  if (!fs.existsSync(filePath)) {
+    res.writeHead(404);
+    return res.end('Not found');
   }
 
-  const result = db.prepare('UPDATE inventory SET stock = ?, updated_at = ? WHERE id = ?').run(stock, new Date().toISOString(), id);
-  if (!result.changes) {
-    return res.status(404).json({ error: 'Item not found' });
+  const ext = path.extname(filePath);
+  const contentType = {
+    '.html': 'text/html; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8'
+  }[ext] || 'application/octet-stream';
+
+  res.writeHead(200, { 'Content-Type': contentType });
+  fs.createReadStream(filePath).pipe(res);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk) => {
+      data += chunk;
+      if (data.length > 1_000_000) {
+        reject(new Error('payload_too_large'));
+      }
+    });
+    req.on('end', () => {
+      if (!data) return resolve({});
+      try {
+        resolve(JSON.parse(data));
+      } catch {
+        reject(new Error('invalid_json'));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS'
+    });
+    return res.end();
   }
 
-  return res.json({ success: true });
-});
-
-app.post('/connection_token', async (_req, res) => {
-  try {
-    const token = await stripe.terminal.connectionTokens.create();
-    res.json(token);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  if (req.method === 'GET' && url.pathname === '/health') {
+    return sendJson(res, 200, { ok: true, mode: 'card_present_pos' });
   }
-});
 
-app.get('/readers', async (_req, res) => {
-  try {
-    const readers = await stripe.terminal.readers.list({ limit: 20 });
-    res.json(readers.data);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  if (req.method === 'GET' && url.pathname === '/inventory') {
+    return sendJson(res, 200, db.getInventory());
   }
-});
 
-app.post('/create-payment-intent', async (req, res) => {
-  try {
-    const { amount, currency = 'aed', cart = [], cashierId = 'cashier-1' } = req.body;
+  if (req.method === 'POST' && /^\/inventory\/.+\/adjust$/.test(url.pathname)) {
+    const id = decodeURIComponent(url.pathname.split('/')[2] || '');
+    const body = await readBody(req).catch((e) => e);
+    if (body instanceof Error) return sendJson(res, 400, { error: body.message });
+    if (typeof body.stock !== 'number' || body.stock < 0) {
+      return sendJson(res, 400, { error: 'stock must be a non-negative number' });
+    }
+    const updated = db.adjustInventory(id, body.stock);
+    if (!updated) return sendJson(res, 404, { error: 'Item not found' });
+    return sendJson(res, 200, { success: true });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/create-payment-intent') {
+    const body = await readBody(req).catch((e) => e);
+    if (body instanceof Error) return sendJson(res, 400, { error: body.message });
+
+    const { amount, currency = 'aed', cart = [], cashierId = 'cashier-1' } = body;
     if (!amount || amount < 50) {
-      return res.status(400).json({ error: 'amount must be >= 50 (smallest currency unit)' });
+      return sendJson(res, 400, { error: 'amount must be >= 50 (smallest currency unit)' });
     }
 
-    const paymentIntent = await stripe.paymentIntents.create({
+    const paymentIntent = {
+      id: `pi_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
       amount,
       currency,
       payment_method_types: ['card_present'],
       capture_method: 'automatic',
+      status: 'requires_payment_method',
       metadata: {
         channel: 'pos_terminal',
         cart: JSON.stringify(cart).slice(0, 450),
         cashierId
       }
-    });
+    };
 
-    const now = new Date().toISOString();
-    insertTransaction.run({
-      id: uuid(),
+    intents.set(paymentIntent.id, paymentIntent);
+    db.insertTransaction({
+      id: randomUUID(),
       payment_intent_id: paymentIntent.id,
       amount: paymentIntent.amount,
       currency: paymentIntent.currency,
@@ -97,82 +122,100 @@ app.post('/create-payment-intent', async (req, res) => {
       payment_channel: 'card_present',
       receipt_number: `RCP-${Date.now()}`,
       metadata: JSON.stringify(paymentIntent.metadata),
-      created_at: now
+      created_at: new Date().toISOString()
     });
 
-    return res.json({ paymentIntent });
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
+    return sendJson(res, 200, { paymentIntent });
   }
-});
 
-app.post('/capture-payment', async (req, res) => {
-  try {
-    const { paymentIntentId } = req.body;
-    if (!paymentIntentId) {
-      return res.status(400).json({ error: 'paymentIntentId is required' });
-    }
-
-    const intent = await stripe.paymentIntents.capture(paymentIntentId);
-    updateTransactionStatus.run({ status: intent.status, payment_intent_id: paymentIntentId });
-
-    return res.json({ paymentIntent: intent });
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/process-payment-on-reader', async (req, res) => {
-  try {
-    const { readerId, paymentIntentId } = req.body;
+  if (req.method === 'POST' && url.pathname === '/process-payment-on-reader') {
+    const body = await readBody(req).catch((e) => e);
+    if (body instanceof Error) return sendJson(res, 400, { error: body.message });
+    const { readerId, paymentIntentId } = body;
     if (!readerId || !paymentIntentId) {
-      return res.status(400).json({ error: 'readerId and paymentIntentId are required' });
+      return sendJson(res, 400, { error: 'readerId and paymentIntentId are required' });
     }
 
-    const response = await stripe.terminal.readers.processPaymentIntent(readerId, {
-      payment_intent: paymentIntentId
+    const intent = intents.get(paymentIntentId);
+    if (!intent) return sendJson(res, 404, { error: 'payment intent not found' });
+
+    intent.status = 'requires_capture';
+    db.updateTransactionStatus(paymentIntentId, intent.status);
+    return sendJson(res, 200, {
+      id: `ra_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
+      object: 'terminal.reader_action',
+      action: { status: intent.status, type: 'process_payment_intent' }
     });
-
-    updateTransactionStatus.run({ status: response.action.status, payment_intent_id: paymentIntentId });
-    return res.json(response);
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
   }
-});
 
-app.post('/refund', async (req, res) => {
-  try {
-    const { paymentIntentId, amount } = req.body;
-    if (!paymentIntentId) {
-      return res.status(400).json({ error: 'paymentIntentId is required' });
-    }
+  if (req.method === 'POST' && url.pathname === '/capture-payment') {
+    const body = await readBody(req).catch((e) => e);
+    if (body instanceof Error) return sendJson(res, 400, { error: body.message });
+    const { paymentIntentId } = body;
+    if (!paymentIntentId) return sendJson(res, 400, { error: 'paymentIntentId is required' });
 
-    const refund = await stripe.refunds.create({
+    const intent = intents.get(paymentIntentId);
+    if (!intent) return sendJson(res, 404, { error: 'payment intent not found' });
+
+    intent.status = 'succeeded';
+    db.updateTransactionStatus(paymentIntentId, intent.status);
+    return sendJson(res, 200, { paymentIntent: intent });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/refund') {
+    const body = await readBody(req).catch((e) => e);
+    if (body instanceof Error) return sendJson(res, 400, { error: body.message });
+    const { paymentIntentId, amount } = body;
+    if (!paymentIntentId) return sendJson(res, 400, { error: 'paymentIntentId is required' });
+
+    const intent = intents.get(paymentIntentId);
+    if (!intent) return sendJson(res, 404, { error: 'payment intent not found' });
+
+    const refund = {
+      id: `re_${randomUUID().replace(/-/g, '').slice(0, 24)}`,
       payment_intent: paymentIntentId,
-      amount
+      amount: amount || intent.amount,
+      status: 'succeeded'
+    };
+
+    db.insertRefund({
+      id: randomUUID(),
+      refund_id: refund.id,
+      payment_intent_id: paymentIntentId,
+      amount: refund.amount,
+      status: refund.status,
+      created_at: new Date().toISOString()
     });
 
-    db.prepare(
-      `INSERT INTO refunds (id, refund_id, payment_intent_id, amount, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).run(uuid(), refund.id, paymentIntentId, refund.amount, refund.status, new Date().toISOString());
-
-    updateTransactionStatus.run({ status: 'refunded', payment_intent_id: paymentIntentId });
-    return res.json({ refund });
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
+    db.updateTransactionStatus(paymentIntentId, 'refunded');
+    return sendJson(res, 200, { refund });
   }
+
+  if (req.method === 'GET' && url.pathname === '/transactions') {
+    return sendJson(res, 200, db.getTransactions());
+  }
+
+  if (req.method === 'GET' && url.pathname === '/readers') {
+    return sendJson(res, 200, [
+      { id: 'simulated_reader_001', device_type: 'simulated_wisepos_e', status: 'online', label: 'POS Reader (Simulated)' }
+    ]);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/connection_token') {
+    return sendJson(res, 200, { secret: `pst_${randomUUID().replace(/-/g, '')}` });
+  }
+
+  if (req.method === 'GET' && url.pathname === '/') {
+    return serveFile(res, path.join(publicDir, 'index.html'));
+  }
+
+  if (req.method === 'GET') {
+    return serveFile(res, path.join(publicDir, url.pathname));
+  }
+
+  return sendJson(res, 404, { error: 'Not found' });
 });
 
-app.get('/transactions', (_req, res) => {
-  const rows = db.prepare('SELECT * FROM transactions ORDER BY created_at DESC').all();
-  return res.json(rows);
-});
-
-app.get('/', (_req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
-});
-
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`POS backend running on http://localhost:${PORT}`);
 });

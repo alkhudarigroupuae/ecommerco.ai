@@ -1,87 +1,136 @@
-const fs = require('fs');
 const path = require('path');
+const { DatabaseSync } = require('node:sqlite');
 
-const dbPath = path.join(__dirname, 'pos.db.json');
+const dbPath = path.join(__dirname, 'pos.db');
+const db = new DatabaseSync(dbPath);
+
+db.exec(`
+  PRAGMA journal_mode = WAL;
+
+  CREATE TABLE IF NOT EXISTS inventory (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    price INTEGER NOT NULL CHECK(price >= 0),
+    stock INTEGER NOT NULL CHECK(stock >= 0),
+    category TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS transactions (
+    id TEXT PRIMARY KEY,
+    payment_intent_id TEXT UNIQUE NOT NULL,
+    amount INTEGER NOT NULL,
+    currency TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payment_channel TEXT NOT NULL,
+    payment_mode TEXT NOT NULL,
+    receipt_number TEXT NOT NULL,
+    metadata TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS refunds (
+    id TEXT PRIMARY KEY,
+    payment_intent_id TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    reason TEXT,
+    created_at TEXT NOT NULL
+  );
+`);
 
 function nowIso() {
   return new Date().toISOString();
 }
 
-function loadState() {
-  if (!fs.existsSync(dbPath)) {
-    return { inventory: [], transactions: [], refunds: [] };
-  }
-
-  try {
-    return JSON.parse(fs.readFileSync(dbPath, 'utf8'));
-  } catch {
-    return { inventory: [], transactions: [], refunds: [] };
-  }
-}
-
-let state = loadState();
-
-function persist() {
-  fs.writeFileSync(dbPath, JSON.stringify(state, null, 2));
-}
-
-function seedInventoryIfNeeded() {
-  if (state.inventory.length > 0) return;
+function seedInventoryIfEmpty() {
+  const count = db.prepare('SELECT COUNT(*) AS count FROM inventory').get().count;
+  if (count > 0) return;
 
   const now = nowIso();
-  state.inventory = [
-    { id: 'sku-espresso', name: 'Espresso', price: 1500, stock: 100, category: 'Drinks', created_at: now, updated_at: now },
-    { id: 'sku-sandwich', name: 'Chicken Sandwich', price: 3200, stock: 50, category: 'Food', created_at: now, updated_at: now },
-    { id: 'sku-cake', name: 'Cheesecake Slice', price: 2200, stock: 35, category: 'Dessert', created_at: now, updated_at: now },
-    { id: 'sku-water', name: 'Mineral Water', price: 500, stock: 250, category: 'Drinks', created_at: now, updated_at: now }
+  const insert = db.prepare(`
+    INSERT INTO inventory (id, name, price, stock, category, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const seed = [
+    ['sku-espresso', 'Espresso', 1500, 120, 'Drinks'],
+    ['sku-sandwich', 'Chicken Sandwich', 3200, 60, 'Food'],
+    ['sku-cake', 'Cheesecake Slice', 2200, 40, 'Dessert'],
+    ['sku-water', 'Mineral Water', 500, 300, 'Drinks']
   ];
-  persist();
+
+  db.exec('BEGIN');
+  try {
+    for (const row of seed) {
+      insert.run(row[0], row[1], row[2], row[3], row[4], now, now);
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
-seedInventoryIfNeeded();
+seedInventoryIfEmpty();
 
 function getInventory() {
-  return [...state.inventory].sort((a, b) => a.name.localeCompare(b.name));
+  return db.prepare('SELECT * FROM inventory ORDER BY name ASC').all();
 }
 
 function adjustInventory(id, stock) {
-  const item = state.inventory.find((row) => row.id === id);
-  if (!item) return false;
-  item.stock = stock;
-  item.updated_at = nowIso();
-  persist();
-  return true;
+  const result = db.prepare('UPDATE inventory SET stock = ?, updated_at = ? WHERE id = ?').run(stock, nowIso(), id);
+  return result.changes > 0;
 }
 
 function insertTransaction(record) {
-  state.transactions.push(record);
-  persist();
+  db.prepare(`
+    INSERT INTO transactions (
+      id, payment_intent_id, amount, currency, status, payment_channel,
+      payment_mode, receipt_number, metadata, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    record.id,
+    record.payment_intent_id,
+    record.amount,
+    record.currency,
+    record.status,
+    record.payment_channel,
+    record.payment_mode,
+    record.receipt_number,
+    record.metadata || null,
+    record.created_at,
+    record.updated_at
+  );
 }
 
 function updateTransactionStatus(paymentIntentId, status) {
-  let changed = 0;
-  state.transactions = state.transactions.map((tx) => {
-    if (tx.payment_intent_id === paymentIntentId) {
-      changed += 1;
-      return { ...tx, status };
-    }
-    return tx;
-  });
-  if (changed) persist();
-  return changed;
-}
-
-function insertRefund(record) {
-  state.refunds.push(record);
-  persist();
+  const result = db.prepare('UPDATE transactions SET status = ?, updated_at = ? WHERE payment_intent_id = ?').run(status, nowIso(), paymentIntentId);
+  return result.changes;
 }
 
 function getTransactions() {
-  return [...state.transactions].sort((a, b) => b.created_at.localeCompare(a.created_at));
+  return db.prepare('SELECT * FROM transactions ORDER BY created_at DESC').all();
+}
+
+function insertRefund(refund) {
+  db.prepare(`
+    INSERT INTO refunds (id, payment_intent_id, amount, status, reason, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    refund.id,
+    refund.payment_intent_id,
+    refund.amount,
+    refund.status,
+    refund.reason || null,
+    refund.created_at
+  );
 }
 
 function getInventoryCount() {
-  return state.inventory.length;
+  return db.prepare('SELECT COUNT(*) AS count FROM inventory').get().count;
 }
 
 module.exports = {
@@ -89,7 +138,7 @@ module.exports = {
   adjustInventory,
   insertTransaction,
   updateTransactionStatus,
-  insertRefund,
   getTransactions,
+  insertRefund,
   getInventoryCount
 };

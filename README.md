@@ -1,14 +1,13 @@
-# Ecommerco Card-Present POS (Local Node Runtime)
+# Ecommerco POS (Card-Present)
 
-POS baseline for a Dell Latitude 7400 with touch interface and card-present oriented payment flow simulation.
+Production-oriented POS baseline for **Dell Latitude 7400** with touch UI and Stripe Terminal card-present flow.
 
-## Architecture
+## Stack
 
-- **Frontend:** Touch-optimized HTML/CSS/JS UI
-- **Backend:** Node.js HTTP server (no external runtime deps)
-- **Database:** Local JSON persistence (`backend/pos.db.json`)
-- **Payment Layer:** Card-present style payment intent simulation endpoints
-- **Storage:** File-based local store (works in restricted environments)
+- Frontend: Electron + touch-optimized web UI (English UI)
+- Backend: Node.js + Express
+- Database: SQLite (via Node built-in `node:sqlite`)
+- Payments: Stripe API with `payment_method_types: ["card_present"]`
 
 ## Folder structure
 
@@ -16,92 +15,94 @@ POS baseline for a Dell Latitude 7400 with touch interface and card-present orie
 .
 ├── backend/
 │   ├── db.js
-│   └── server.js
+│   ├── server.js
+│   └── tests/
+├── electron/
 ├── public/
-│   ├── app.js
-│   ├── index.html
-│   └── styles.css
 ├── .env.example
 ├── package.json
 └── README.md
 ```
 
-## Required endpoints
+## Environment
 
+Create `.env` from the template:
+
+```bash
+cp .env.example .env
+```
+
+Set your key:
+
+```env
+STRIPE_SECRET=sk_test_xxx
+PORT=3001
+```
+
+If `STRIPE_SECRET` is missing, app runs in **simulated terminal mode** for local testing.
+
+## API endpoints
+
+Required:
 - `POST /create-payment-intent`
 - `POST /capture-payment`
 - `POST /refund`
 - `GET /transactions`
 
 Also included:
-
 - `GET /inventory`
 - `POST /inventory/:id/adjust`
 - `POST /connection_token`
 - `GET /readers`
 - `POST /process-payment-on-reader`
+- `GET /health`
 
-## POS features implemented
+## Stripe PaymentIntent example
 
-- Product catalog
-- Cart with running total
-- Pay button
-- Refund button
-- Receipt screen + print action
-- Inventory management endpoints
-- Transaction history
-- NFC / EMV / manual fallback mode selection
-- Card-present transaction model only
+```js
+const stripe = require('stripe')(process.env.STRIPE_SECRET)
 
-## Security and PCI controls
-
-- No PAN/CVV card data is collected or stored locally.
-- No PAN/CVV data is stored in local files.
-- Current implementation simulates reader interactions for local/offline development.
-- For production deployment, enforce TLS, segmented network controls, and audited terminal integration.
+const paymentIntent = await stripe.paymentIntents.create({
+  amount: amount,
+  currency: 'aed',
+  payment_method_types: ['card_present'],
+  capture_method: 'automatic'
+})
+```
 
 ## Payment flow
 
 1. Cashier selects products.
-2. UI computes total.
-3. Backend creates `card_present` PaymentIntent.
-4. Card-present action is simulated (tap/insert/manual mode in UI).
-5. Server marks payment intent through process/capture states.
-6. Approval state is stored locally.
+2. POS calculates total.
+3. Backend creates a Stripe `card_present` PaymentIntent.
+4. Card is tapped/inserted/read by terminal (or simulated reader).
+5. Payment is processed and captured.
+6. Approval status is returned.
 7. Receipt is shown and printable.
 
-## Run locally
+## Security notes
+
+- No PAN/CVV is collected or stored locally.
+- API keys are loaded from environment variables only.
+- Use HTTPS/reverse proxy and segmented PCI network for production deployment.
+
+## Run
 
 ```bash
 npm install
 npm start
 ```
 
-`npm start` launches:
+- `npm start` launches Electron POS app and starts backend process.
+- For backend-only testing: `npm run start:backend`
 
-- Backend + POS UI at `http://localhost:3001`
+---
 
-## Notes for hardware on Dell Latitude 7400
+## شرح بالعربي (أنا أشرح لك، والتطبيق يظل بالإنجليزي)
 
-- This build runs locally and can be tested without external reader SDKs.
-- `/readers` returns a simulated reader for end-to-end flow validation.
-- UI keeps NFC/EMV/manual payment mode selection for cashier workflow testing.
+حبيبي هذا النظام الآن شغال كـ POS حقيقي من ناحية التدفق:
+- إنشاء عملية دفع `card_present` فقط.
+- دعم سيناريو القارئ الطرفي (Stripe Terminal) أو محاكاة محلية إذا ما حطيت المفتاح.
+- حفظ المنتجات/العمليات/الاسترجاعات في SQLite محليًا.
 
-## شرح سريع بالعربية (الواجهة تبقى بالإنجليزية)
-
-هذا المشروع عبارة عن نظام نقاط بيع (POS) محلي يعمل على اللابتوب، بينما **نصوص التطبيق نفسها داخل الواجهة تبقى بالإنجليزية** حتى تكون مناسبة للتشغيل العملي للموظفين.
-
-- الكاشير يختار المنتجات من الكتالوج.
-- النظام يجمعها في السلة ويحسب الإجمالي.
-- عند الدفع، السيرفر ينشئ `PaymentIntent` بنوع `card_present` فقط.
-- العميل يدفع عبر Stripe Terminal (NFC/EMV أو إدخال يدوي حسب الدعم المتاح).
-- بعد الموافقة، يتم حفظ العملية وإظهار شاشة الإيصال مع خيار الطباعة.
-
-### كيف تشغّله بسرعة
-
-```bash
-npm install
-npm start
-```
-
-هذا الإصدار لا يحتاج حزم تشغيل خارجية، لذلك يعمل حتى في البيئات المقيدة بالشبكة.
+يعني تقدر تختبره مباشرة على اللابتوب، وبعدها تنقله لبيئة PCI حقيقية مع قارئ Stripe Terminal فعلي.

@@ -1,0 +1,28 @@
+{
+  "name": "ecommerco-pos-terminal",
+  "version": "1.1.0",
+  "description": "Card-present POS for Dell Latitude 7400 with Stripe Terminal integration",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:backend": "node backend/server.js",
+    "test": "node --test backend/tests/*.test.js",
+    "lint:check": "node --check backend/server.js && node --check backend/db.js && node --check public/app.js && node --check electron/main.js"
+  },
+  "keywords": [
+    "pos",
+    "stripe-terminal",
+    "card-present",
+    "electron"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "stripe": "^16.9.0"
+  },
+  "devDependencies": {
+    "electron": "^32.2.0"
+  }
+}

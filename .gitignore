@@ -1,0 +1,3 @@
+node_modules/
+backend/pos.db
+backend/pos.db-*

@@ -1,0 +1,13 @@
+:root { font-family: Arial, sans-serif; color: #111827; }
+body { margin: 0; background: #f3f4f6; }
+.layout { padding: 14px; }
+.grid { display: grid; gap: 12px; grid-template-columns: 1.2fr 1fr 1fr; }
+.panel { background: #fff; border-radius: 12px; padding: 14px; min-height: 75vh; }
+.tiles { display: grid; grid-template-columns: repeat(2,minmax(130px,1fr)); gap: 10px; }
+.tile { border: 1px solid #cbd5e1; border-radius: 12px; padding: 16px; font-size: 20px; text-align: left; }
+.row { display:flex; justify-content:space-between; border-bottom:1px solid #eef2f7; padding:8px 0; }
+input,select,button { width:100%; box-sizing:border-box; font-size:18px; padding:10px; margin:4px 0 10px; border-radius:8px; border:1px solid #cbd5e1; }
+.pay { background:#0f766e; color:white; border:none; }
+.refund { background:#b91c1c; color:white; border:none; }
+.history { max-height:220px; overflow:auto; }
+@media (max-width: 1200px) { .grid { grid-template-columns: 1fr; } .panel { min-height: auto; } }
